@@ -46,10 +46,29 @@ pub fn include_wgsl(input: TokenStream) -> TokenStream {
 
 
 fn load(ref_dir: &Path, path: &Path) -> Result<String, String> {
-    let resolved_path = ref_dir.join(path);
-    tracked_path::path(resolved_path.to_str().unwrap());
+    let resolved_path = ref_dir.join(path).to_str().unwrap().to_owned();
+    tracked_path::path(&resolved_path);
     let wgsl = fs::read_to_string(&resolved_path)
-        .map_err(|e| format!("could not load file '{}': {}", resolved_path.display(), e))?;
+        .map_err(|e| format!("could not load file '{}': {}", resolved_path, e))?;
+
+    let module = naga::front::wgsl::parse_str(&wgsl).map_err(|e| {
+        // This is tricky: We currently print to stderr immediately which
+        // results in nicer errors with better colors. However, this completely
+        // bypasses rustc, meaning that this error will likely not be shown in
+        // IDEs.
+        e.emit_to_stderr_with_path(&wgsl, &resolved_path);
+        format!("Parse errors occured in '{resolved_path}'")
+    })?;
+
+    let mut validator = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        // TODO: this might be something to let the user configure later.
+        naga::valid::Capabilities::all(),
+    );
+    validator.validate(&module).map_err(|e| {
+        e.emit_to_stderr_with_path(&wgsl, &resolved_path);
+        format!("Validation errors occured in '{resolved_path}'")
+    })?;
 
     Ok(wgsl)
 }
@@ -57,5 +76,12 @@ fn load(ref_dir: &Path, path: &Path) -> Result<String, String> {
 fn compile_err(message: &str) -> TokenStream {
     quote! {{
         compile_error!(#message);
+
+        // We still create a value to prevent type errors down the line. They
+        // are just not useful.
+        wgpu::ShaderModuleDescriptor {
+            label: std::option::Option::Some("dummy error placeholder"),
+            source: wgpu::ShaderSource::Wgsl("".into()),
+        }
     }}.into()
 }
