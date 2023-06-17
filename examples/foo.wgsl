@@ -1,3 +1,5 @@
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+#include "bar.wgsl"
+
+fn foo() -> Banana {
+    return vec3(1.0, 2.0, 3.0);
 }

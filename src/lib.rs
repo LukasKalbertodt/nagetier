@@ -2,7 +2,7 @@
 #![feature(track_path)]
 
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, collections::HashMap, fmt::Write, unreachable};
 
 use proc_macro::{TokenStream, tracked_path};
 use quote::quote;
@@ -19,45 +19,109 @@ pub fn include_wgsl(input: TokenStream) -> TokenStream {
     if it.next().is_some() {
         return compile_err("expected single string literal, but found additional token");
     }
-    let wgsl_path = match litrs::StringLit::try_from(&first_token) {
+    let arg = match litrs::StringLit::try_from(&first_token) {
         Ok(string_lit) => string_lit.into_value().into_owned(),
         Err(e) => return e.to_compile_error(),
     };
 
 
-    // Figure out paths and load file
-    let ref_path = first_token.span().source_file().path();
-    let ref_dir = ref_path.parent().expect("source file path has no parent");
-    let wgsl = match load(&ref_dir, Path::new(&wgsl_path)) {
+    // Figure out paths, load file and validate it.
+    let wgsl_path = {
+        let ref_path = first_token.span().source_file().path();
+        let ref_dir = ref_path.parent().expect("source file path has no parent");
+        ref_dir.join(&arg).to_string()
+    };
+    let wgsl = match load(&wgsl_path) {
         Ok(loaded) => loaded,
         Err(e) => return compile_err(&e),
     };
+    if let Err(e) = validate(&wgsl_path, &wgsl) {
+        return compile_err(&e);
+    }
 
 
     // Create output
-    let full_path = ref_dir.join(wgsl_path).display().to_string();
     quote! {{
         wgpu::ShaderModuleDescriptor {
-            label: std::option::Option::Some(#full_path),
+            label: std::option::Option::Some(#wgsl_path),
             source: wgpu::ShaderSource::Wgsl(#wgsl.into()),
         }
     }}.into()
 }
 
 
-fn load(ref_dir: &Path, path: &Path) -> Result<String, String> {
-    let resolved_path = ref_dir.join(path).to_str().unwrap().to_owned();
-    tracked_path::path(&resolved_path);
-    let wgsl = fs::read_to_string(&resolved_path)
-        .map_err(|e| format!("could not load file '{}': {}", resolved_path, e))?;
+fn load(path: &str) -> Result<String, String> {
+    let mut files = HashMap::new();
+    load_impl(path, &mut files)?;
+    match files.remove(path) {
+        Some(LoadState::Loaded(c)) => Ok(c),
+        _ => unreachable!(),
+    }
+}
 
+enum LoadState {
+    Loading,
+    Loaded(String),
+}
+
+
+fn load_impl<'a>(path: &str, files: &'a mut HashMap<String, LoadState>) -> Result<(), String> {
+    match files.get(path) {
+        None => {}
+        // TODO: improve error message
+        Some(LoadState::Loading) => return Err(format!("circular include in {path}")),
+        Some(LoadState::Loaded(_)) => return Ok(()),
+    }
+    files.insert(path.into(), LoadState::Loading);
+
+    tracked_path::path(&path);
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| format!("could not load file '{}': {}", path, e))?;
+
+    let needle = "#include \"";
+    let mut out = String::new();
+    for (i, line) in raw.lines().enumerate() {
+        let line_num = i + 1;
+        if !line.starts_with(needle) {
+            write!(out, "{line}\n").unwrap();
+            continue;
+        }
+
+        let start_path = needle.len();
+        let end_path = line[start_path..].find('"').ok_or_else(|| {
+            // TODO
+            format!("undelimited include (missing \") in '{path}:{line_num}'")
+        })?;
+
+        // Resolve path
+        let included_path = &line[start_path..][..end_path];
+        let resolved_included_path = Path::new(path).parent().unwrap()
+            .join(included_path)
+            .canonicalize()
+            .map_err(|e| format!("failed to canonicalize path: {e}"))?
+            .to_string();
+
+        // Load included file
+        load_impl(&resolved_included_path, files)?;
+        let content = match &files[&resolved_included_path] {
+            LoadState::Loaded(c) => c,
+            _ => unreachable!(),
+        };
+        write!(out, "{content}\n").unwrap();
+    };
+
+    files.insert(path.into(), LoadState::Loaded(out));
+    Ok(())
+}
+
+fn validate(path: &str, wgsl: &str) -> Result<(), String> {
     let module = naga::front::wgsl::parse_str(&wgsl).map_err(|e| {
         // This is tricky: We currently print to stderr immediately which
         // results in nicer errors with better colors. However, this completely
         // bypasses rustc, meaning that this error will likely not be shown in
         // IDEs.
-        e.emit_to_stderr_with_path(&wgsl, &resolved_path);
-        format!("Parse errors occured in '{resolved_path}'")
+        e.emit_to_stderr_with_path(&wgsl, &path);
+        format!("Parse errors occured in '{path}'")
     })?;
 
     let mut validator = naga::valid::Validator::new(
@@ -66,11 +130,11 @@ fn load(ref_dir: &Path, path: &Path) -> Result<String, String> {
         naga::valid::Capabilities::all(),
     );
     validator.validate(&module).map_err(|e| {
-        e.emit_to_stderr_with_path(&wgsl, &resolved_path);
-        format!("Validation errors occured in '{resolved_path}'")
+        e.emit_to_stderr_with_path(&wgsl, &path);
+        format!("Validation errors occured in '{path}'")
     })?;
 
-    Ok(wgsl)
+    Ok(())
 }
 
 fn compile_err(message: &str) -> TokenStream {
@@ -84,4 +148,14 @@ fn compile_err(message: &str) -> TokenStream {
             source: wgpu::ShaderSource::Wgsl("".into()),
         }
     }}.into()
+}
+
+trait PathExt {
+    fn to_string(&self) -> String;
+}
+
+impl PathExt for Path {
+    fn to_string(&self) -> String {
+        self.to_str().expect("path is not valid UTF8").to_owned()
+    }
 }
