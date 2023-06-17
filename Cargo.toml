@@ -1,0 +1,14 @@
+[package]
+name = "nagetier"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+litrs = { version = "0.4.0", default-features = false }
+quote = "1.0.28"
+
+[dev-dependencies]
+wgpu = "0.16.0"
