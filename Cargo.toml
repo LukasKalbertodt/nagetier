@@ -8,7 +8,7 @@ proc-macro = true
 
 [dependencies]
 litrs = { version = "0.4.0", default-features = false }
-naga = { version = "0.11.0", features = ["wgsl-in", "span", "validate"] }
+naga = { version = "0.12.0", features = ["wgsl-in", "span", "validate"] }
 quote = "1.0.28"
 
 [dev-dependencies]
