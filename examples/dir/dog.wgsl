@@ -1,1 +1,1 @@
-type Dog = u32;
+alias Dog = u32;
