@@ -17,7 +17,7 @@ pub fn include_wgsl(input: TokenStream) -> TokenStream {
         return compile_err("expected single string literal, but found additional token");
     }
     let arg = match litrs::StringLit::try_from(&first_token) {
-        Ok(string_lit) => string_lit.into_value().into_owned(),
+        Ok(string_lit) => string_lit.into_value(),
         Err(e) => return e.to_compile_error(),
     };
 
