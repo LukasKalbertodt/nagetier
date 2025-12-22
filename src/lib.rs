@@ -1,10 +1,7 @@
-#![feature(proc_macro_span)]
-#![feature(track_path)]
-
 
 use std::{fs, path::Path, collections::HashMap, fmt::Write, unreachable};
 
-use proc_macro::{TokenStream, tracked_path};
+use proc_macro::TokenStream;
 use quote::quote;
 
 
@@ -27,11 +24,11 @@ pub fn include_wgsl(input: TokenStream) -> TokenStream {
 
     // Figure out paths, load file and validate it.
     let wgsl_path = {
-        let ref_path = first_token.span().source_file().path();
+        let ref_path = first_token.span().local_file().expect("no local path");
         let ref_dir = ref_path.parent().expect("source file path has no parent");
         ref_dir.join(&arg).to_string()
     };
-    let wgsl = match load(&wgsl_path) {
+    let (wgsl, tracked_paths) = match load(&wgsl_path) {
         Ok(loaded) => loaded,
         Err(e) => return compile_err(&e),
     };
@@ -42,6 +39,7 @@ pub fn include_wgsl(input: TokenStream) -> TokenStream {
 
     // Create output
     quote! {{
+        #( include_bytes!(#tracked_paths); )*
         wgpu::ShaderModuleDescriptor {
             label: std::option::Option::Some(#wgsl_path),
             source: wgpu::ShaderSource::Wgsl(#wgsl.into()),
@@ -50,13 +48,13 @@ pub fn include_wgsl(input: TokenStream) -> TokenStream {
 }
 
 
-fn load(path: &str) -> Result<String, String> {
+fn load(path: &str) -> Result<(String, Vec<String>), String> {
     let mut files = HashMap::new();
     load_impl(path, &mut files)?;
-    match files.remove(path) {
-        Some(LoadState::Loaded(c)) => Ok(c),
-        _ => unreachable!(),
-    }
+    let Some(LoadState::Loaded(code)) = files.remove(path) else { unreachable!() };
+    let paths = files.keys().cloned().collect::<Vec<_>>();
+
+    Ok((code, paths))
 }
 
 enum LoadState {
@@ -74,7 +72,6 @@ fn load_impl<'a>(path: &str, files: &'a mut HashMap<String, LoadState>) -> Resul
     }
     files.insert(path.into(), LoadState::Loading);
 
-    tracked_path::path(&path);
     let raw = fs::read_to_string(&path)
         .map_err(|e| format!("could not load file '{}': {}", path, e))?;
 
