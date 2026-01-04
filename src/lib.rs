@@ -38,6 +38,7 @@ pub fn include_wgsl(input: TokenStream) -> TokenStream {
 
 
     // Create output
+    let tracked_paths = tracked_paths.into_iter().chain([arg]);
     quote! {{
         #( include_bytes!(#tracked_paths); )*
         wgpu::ShaderModuleDescriptor {
